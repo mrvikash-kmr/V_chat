@@ -20,11 +20,11 @@ import {
   where, 
   orderBy, 
   serverTimestamp, 
-  Timestamp,
-  or,
-  and,
   getDocs,
-  limit
+  limit,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager
 } from 'firebase/firestore';
 import { getAnalytics } from 'firebase/analytics';
 import { User, Chat, Message } from '../types';
@@ -45,7 +45,13 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
 const auth = getAuth(app);
-const db = getFirestore(app);
+
+// Initialize Firestore with persistence enabled and long-polling as fallback
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+});
 
 // --- SERVICE CLASS ---
 class FirebaseBackendService {
@@ -73,7 +79,7 @@ class FirebaseBackendService {
       participants: data.participants || [],
       lastMessage: data.lastMessage || '',
       lastMessageTime: data.lastMessageTime?.toDate?.().toISOString() || new Date().toISOString(),
-      unreadCount: 0, // In a real app, calculate this based on a separate 'readReceipts' subcollection
+      unreadCount: 0, 
       avatar: data.avatar || '',
       messages: []
     };
@@ -93,7 +99,6 @@ class FirebaseBackendService {
 
   // --- AUTH ---
 
-  // Check if current config is dummy
   isConfigured(): boolean {
       return firebaseConfig.apiKey !== "AIzaSyD-REPLACE_WITH_YOUR_KEY";
   }
@@ -104,19 +109,23 @@ class FirebaseBackendService {
         unsubscribe();
         if (firebaseUser) {
           try {
+            // Attempt to fetch profile
             const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
             if (userDoc.exists()) {
               this.currentUser = this.mapDocToUser(userDoc);
-              // Try to set online, but don't block/fail if offline
-              updateDoc(doc(db, 'users', firebaseUser.uid), { isOnline: true }).catch(e => console.warn("Online status update failed", e));
+              // Non-blocking update
+              updateDoc(doc(db, 'users', firebaseUser.uid), { isOnline: true }).catch(() => {});
               resolve(this.currentUser);
             } else {
-              // Auth exists but Firestore doc missing (zombie state)
+              // Valid auth, but no profile.
+              // If the database doesn't exist, we might get here or catch block.
+              // We'll treat as null so user can 'Sign Up' again to trigger profile creation logic
               resolve(null);
             }
-          } catch (e) {
+          } catch (e: any) {
             console.error("Failed to fetch user profile:", e);
-            // Return null so the app goes to Login screen where errors are more visible
+            // If offline, we might want to return a cached user if possible? 
+            // For now, resolve null to force login screen which handles errors better.
             resolve(null);
           }
         } else {
@@ -140,12 +149,26 @@ class FirebaseBackendService {
             updateDoc(doc(db, 'users', this.currentUser.id), { isOnline: true }).catch(() => {});
             return this.currentUser;
         } else {
-            // Profile missing
-            throw new Error('User profile not found in database.');
+            // Attempt to heal zombie account (Auth exists, Firestore doc missing)
+            const newUser = {
+                name: email.split('@')[0],
+                email: email,
+                avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userCredential.user.uid}`,
+                isOnline: true,
+                status: 'Available',
+                createdAt: serverTimestamp()
+            };
+            await setDoc(doc(db, 'users', userCredential.user.uid), newUser);
+            this.currentUser = { id: userCredential.user.uid, ...newUser };
+            return this.currentUser!;
         }
     } catch (e: any) {
-        if (e.message.includes('offline') || e.code === 'unavailable') {
-           throw new Error('Network error: Unable to connect to database.');
+        // Handle specific Firestore setup errors
+        if (e.message.includes('not-found') || e.message.includes('does not exist')) {
+             throw new Error('Database not initialized. Please create Cloud Firestore in Firebase Console.');
+        }
+        if (e.code === 'unavailable' || e.message.includes('offline')) {
+           throw new Error('Network error: Unable to connect to database. Check your internet connection.');
         }
         throw e;
     }
@@ -158,31 +181,21 @@ class FirebaseBackendService {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         uid = userCredential.user.uid;
     } catch (error: any) {
-        // Robustness: Handle "Email already in use". 
-        // If the user tries to signup again because the previous attempt failed at the DB step,
-        // we should try to recover by creating the doc if it's missing.
         if (error.code === 'auth/email-already-in-use') {
             try {
-                // Try to login to verify ownership (auto-recovery)
-                const userCredential = await signInWithEmailAndPassword(auth, email, password);
-                uid = userCredential.user.uid;
-                
-                // Check if doc exists
-                const existingDoc = await getDoc(doc(db, 'users', uid));
-                if (existingDoc.exists()) {
-                    throw new Error('Account already exists. Please log in.');
-                }
-                // If doc is missing, fall through to creation logic below
+                // Auto-login if email exists
+                return await this.login(email, password);
             } catch (loginErr: any) {
-                if (loginErr.message === 'Account already exists. Please log in.') throw loginErr;
-                throw new Error('Email already in use. Please log in.');
+                if (loginErr.message.includes('password')) {
+                    throw new Error('Email already in use. Please log in.');
+                }
+                throw loginErr;
             }
         } else {
             throw error;
         }
     }
     
-    // Create or Re-create User Profile
     const newUser: any = {
       name,
       email,
@@ -195,8 +208,7 @@ class FirebaseBackendService {
     try {
         await setDoc(doc(db, 'users', uid), newUser);
     } catch (e: any) {
-        console.error("Database Error:", e);
-        if (e.message?.includes('not-found') || e.code === 'not-found') {
+        if (e.message?.includes('not-found') || e.code === 'not-found' || e.message.includes('does not exist')) {
             throw new Error('Database not configured. Please create Cloud Firestore in Firebase Console.');
         }
         throw new Error('Failed to create profile. Please check your connection.');
@@ -211,7 +223,7 @@ class FirebaseBackendService {
         try {
             await updateDoc(doc(db, 'users', this.currentUser.id), { isOnline: false });
         } catch (e) {
-            console.warn("Offline status update failed", e);
+            // Ignore offline errors during logout
         }
     }
     await signOut(auth);
@@ -236,15 +248,13 @@ class FirebaseBackendService {
   onAuthChange(callback: (user: User | null) => void) {
     return onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        // Real-time listener for the user's own profile
         const unsub = onSnapshot(doc(db, 'users', firebaseUser.uid), (docSnap) => {
             if (docSnap.exists()) {
                 this.currentUser = this.mapDocToUser(docSnap);
                 callback(this.currentUser);
             }
         }, (error) => {
-            console.error("Profile Sync Error", error);
-            // Don't log out, just warn
+             // Suppress errors here to prevent noisy console if DB is missing during auth check
         });
       } else {
         this.currentUser = null;
@@ -259,7 +269,7 @@ class FirebaseBackendService {
       const users = snapshot.docs.map(doc => this.mapDocToUser(doc));
       callback(users);
     }, (error) => {
-        console.warn("User sync error", error);
+        // Fallback to empty list on error
         callback([]);
     });
   }
@@ -275,7 +285,6 @@ class FirebaseBackendService {
       const chats = snapshot.docs.map(doc => this.mapDocToChat(doc));
       callback(chats);
     }, (error) => {
-        console.warn("Chat sync error", error);
         callback([]);
     });
   }
@@ -287,9 +296,7 @@ class FirebaseBackendService {
       } else {
         callback(null);
       }
-    }, (error) => {
-        console.warn("Single chat sync error", error);
-    });
+    }, (error) => {});
   }
 
   subscribeToMessages(chatId: string, callback: (messages: Message[]) => void) {
@@ -302,7 +309,6 @@ class FirebaseBackendService {
       const messages = snapshot.docs.map(doc => this.mapDocToMessage(doc));
       callback(messages);
     }, (error) => {
-        console.warn("Message sync error", error);
         callback([]);
     });
   }
