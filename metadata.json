@@ -1,0 +1,8 @@
+{
+  "name": "vChat",
+  "description": "A premium, glassmorphism-styled messaging application with real-time chat simulation, voice call interfaces, and comprehensive contact management.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
