@@ -10,6 +10,7 @@ import { backend } from './services/backend';
 
 // --- UTILS ---
 const formatTime = (isoString: string) => {
+    if (!isoString) return '';
     const date = new Date(isoString);
     if (isNaN(date.getTime())) return '';
     const now = new Date();
@@ -86,7 +87,6 @@ const TabContent = ({ activeTab, navigate }: { activeTab: TabName, navigate: any
 
     const handleSaveProfile = async () => {
         if (!currentUser) return;
-        // Firestore offline support allows updates offline, but for profile we might want to warn
         try {
             await backend.updateUser(currentUser.id, { name: editName, status: editStatus });
             setIsEditingProfile(false);
@@ -216,85 +216,111 @@ const TabContent = ({ activeTab, navigate }: { activeTab: TabName, navigate: any
             );
         case 'SETTINGS':
         case 'PROFILE':
-             // Reusing previous logic, simplified for brevity in this response as they work
              return <TabContentProfile activeTab={activeTab} currentUser={currentUser} navigate={navigate} isEditingProfile={isEditingProfile} setIsEditingProfile={setIsEditingProfile} editName={editName} setEditName={setEditName} editStatus={editStatus} setEditStatus={setEditStatus} handleSaveProfile={handleSaveProfile} showToast={showToast} />;
         default: return null;
     }
 };
 
-// Helper for Profile/Settings to avoid duplication in case
 const TabContentProfile = ({ activeTab, currentUser, navigate, isEditingProfile, setIsEditingProfile, editName, setEditName, editStatus, setEditStatus, handleSaveProfile, showToast }: any) => {
-    if (activeTab === 'SETTINGS') {
-        return (
-            <div className="flex-1 overflow-y-auto custom-scrollbar px-6 pb-20 md:pb-0 pt-6">
-                 <div className="bg-white/5 border border-white/10 rounded-[1.5rem] overflow-hidden mb-6">
-                    {[
-                        {icon: 'person', color: 'text-blue-400', bg: 'bg-blue-500/20', label: 'Account', sub: 'Security, change number'},
-                        {icon: 'lock', color: 'text-green-400', bg: 'bg-green-500/20', label: 'Privacy', sub: 'Block contacts'},
-                        {icon: 'notifications', color: 'text-orange-400', bg: 'bg-orange-500/20', label: 'Notifications', sub: 'Message tones'},
-                        {icon: 'palette', color: 'text-purple-400', bg: 'bg-purple-500/20', label: 'Appearance', sub: 'Theme, wallpaper'},
-                    ].map((item, idx) => (
-                        <div key={idx} className="flex items-center p-4 hover:bg-white/5 cursor-pointer border-b border-white/5 last:border-0 transition-colors">
-                            <div className={`w-9 h-9 rounded-xl ${item.bg} ${item.color} flex items-center justify-center mr-4`}>
-                                <span className="material-symbols-rounded text-xl">{item.icon}</span>
-                            </div>
-                            <div className="flex-1">
-                                <p className="font-medium text-white text-sm">{item.label}</p>
-                                <p className="text-[10px] text-zinc-500">{item.sub}</p>
-                            </div>
-                            <span className="material-symbols-rounded text-zinc-600">chevron_right</span>
-                        </div>
-                    ))}
-                </div>
-                <Button 
-                    variant="secondary" 
-                    fullWidth 
-                    onClick={() => {
-                        backend.logout();
-                        navigate('/login');
-                        showToast('Logged out successfully', 'info');
-                    }}
-                    className="text-red-500 hover:text-red-600 border border-red-500/10 hover:bg-red-500/10"
-                >
-                    Log Out
-                </Button>
-            </div>
-        );
-    }
+    // Determine phone number display or fallback
+    const displayPhone = currentUser.phone || currentUser.email || "+12 6541 1234";
+
     return (
-        <div className="flex-1 overflow-y-auto custom-scrollbar px-6 pb-20 md:pb-0 pt-8 text-center">
-            <div className="relative inline-block mb-6">
-                <div className="w-28 h-28 rounded-full border-2 border-primary/30 p-1">
-                    <img src={currentUser.avatar} className="w-full h-full rounded-full object-cover" alt="Profile" />
-                </div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar px-4 pb-24 md:pb-0 pt-6 animate-fade-in">
+             {/* Header */}
+            <div className="flex items-center justify-between mb-8 px-2">
+                <button 
+                    onClick={() => navigate(-1)} 
+                    className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white hover:bg-white/10 transition-colors"
+                >
+                     <span className="material-symbols-rounded">chevron_left</span>
+                </button>
+                <h2 className="text-xl font-bold text-white tracking-wide">My Profile</h2>
+                <div className="w-10" /> {/* Spacer for visual centering */}
             </div>
 
-            {isEditingProfile ? (
-                <div className="space-y-4 mb-6 text-left animate-fade-in">
-                    <Input label="Display Name" value={editName} onChange={(e:any) => setEditName(e.target.value)} />
-                    <Input label="Status Message" value={editStatus} onChange={(e:any) => setEditStatus(e.target.value)} />
-                    <div className="flex gap-2 pt-2">
-                        <Button variant="secondary" onClick={() => setIsEditingProfile(false)} className="flex-1 h-10 text-sm">Cancel</Button>
-                        <Button onClick={handleSaveProfile} className="flex-1 h-10 text-sm">Save</Button>
+            {/* Profile Info */}
+            <div className="flex flex-col items-center mb-10">
+                <div className="relative mb-4 group">
+                    <div className="w-28 h-28 rounded-full p-1 border-2 border-[#3f3f3f] group-hover:border-primary/50 transition-colors">
+                         <img src={currentUser.avatar} className="w-full h-full rounded-full object-cover" alt="Profile" />
+                    </div>
+                    {/* Online indicator */}
+                    <div className="absolute bottom-2 right-2 w-6 h-6 bg-background-dark rounded-full flex items-center justify-center">
+                        <div className="w-3.5 h-3.5 bg-primary rounded-full border-2 border-background-dark"></div>
                     </div>
                 </div>
-            ) : (
-                <>
-                    <h2 className="text-xl font-bold text-white flex items-center justify-center gap-2 mb-1">
-                        {currentUser.name}
-                        <button onClick={() => setIsEditingProfile(true)} className="text-zinc-500 hover:text-white transition-colors">
-                            <span className="material-symbols-rounded text-lg">edit</span>
+                
+                {isEditingProfile ? (
+                     <div className="w-full max-w-xs space-y-3">
+                        <Input value={editName} onChange={(e: any) => setEditName(e.target.value)} placeholder="Display Name" />
+                        <Input value={editStatus} onChange={(e: any) => setEditStatus(e.target.value)} placeholder="Status" />
+                        <div className="flex gap-2">
+                             <Button variant="secondary" onClick={() => setIsEditingProfile(false)} className="h-10 text-sm flex-1">Cancel</Button>
+                             <Button onClick={handleSaveProfile} className="h-10 text-sm flex-1">Save</Button>
+                        </div>
+                     </div>
+                ) : (
+                    <>
+                        <h3 className="text-2xl font-bold text-white mb-1">{currentUser.name}</h3>
+                        <p className="text-zinc-500 text-sm font-medium mb-1">{displayPhone}</p>
+                        <button 
+                            onClick={() => setIsEditingProfile(true)}
+                            className="text-xs text-primary font-bold uppercase tracking-wider mt-2 hover:text-white transition-colors"
+                        >
+                            Edit Profile
                         </button>
-                    </h2>
-                    <p className="text-zinc-400 text-sm mb-1">{currentUser.status || 'No status set'}</p>
-                    <p className="text-zinc-600 text-xs mb-8">{currentUser.email}</p>
-                </>
-            )}
+                    </>
+                )}
+            </div>
+
+            {/* Menu Group 1 */}
+            <div className="bg-[#1c1c1c] rounded-[32px] overflow-hidden mb-4 border border-white/5">
+                {[
+                    { icon: 'person', label: 'Account', sub: 'Security, change number', color: 'text-blue-400', bg: 'bg-blue-500/10' },
+                    { icon: 'lock', label: 'Privacy', sub: 'Blocked contacts, disappearing messages', color: 'text-green-400', bg: 'bg-green-500/10' },
+                    { icon: 'notifications', label: 'Notifications', sub: 'Message, group & call tones', color: 'text-orange-400', bg: 'bg-orange-500/10' },
+                    { icon: 'dns', label: 'Data and Storage', sub: 'Network usage, auto-download', color: 'text-purple-400', bg: 'bg-purple-500/10' }
+                ].map((item, i) => (
+                    <div key={i} className="flex items-center p-4 hover:bg-white/5 cursor-pointer active:bg-white/10 transition-colors border-b border-white/5 last:border-0">
+                        <div className={`w-11 h-11 rounded-full ${item.bg} ${item.color} flex items-center justify-center mr-4`}>
+                            <span className="material-symbols-rounded text-[22px]">{item.icon}</span>
+                        </div>
+                        <div className="flex-1">
+                            <h4 className="text-white font-semibold text-[15px]">{item.label}</h4>
+                            <p className="text-zinc-500 text-xs mt-0.5">{item.sub}</p>
+                        </div>
+                        <span className="material-symbols-rounded text-zinc-600 text-xl">chevron_right</span>
+                    </div>
+                ))}
+            </div>
+
+            {/* Menu Group 2 */}
+            <div className="bg-[#1c1c1c] rounded-[32px] overflow-hidden mb-8 border border-white/5">
+                 <div className="flex items-center p-4 hover:bg-white/5 cursor-pointer transition-colors border-b border-white/5">
+                        <div className="w-11 h-11 rounded-full bg-zinc-500/10 text-zinc-400 flex items-center justify-center mr-4">
+                            <span className="material-symbols-rounded text-[22px]">help</span>
+                        </div>
+                        <div className="flex-1">
+                            <h4 className="text-white font-semibold text-[15px]">Help</h4>
+                            <p className="text-zinc-500 text-xs mt-0.5">Help center, contact us</p>
+                        </div>
+                        <span className="material-symbols-rounded text-zinc-600 text-xl">chevron_right</span>
+                </div>
+                 <div onClick={() => { backend.logout(); navigate('/'); showToast('Logged out', 'info'); }} className="flex items-center p-4 hover:bg-red-500/10 cursor-pointer transition-colors group">
+                        <div className="w-11 h-11 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center mr-4 group-hover:bg-red-500/20 transition-colors">
+                            <span className="material-symbols-rounded text-[22px]">logout</span>
+                        </div>
+                        <div className="flex-1">
+                            <h4 className="text-red-500 font-semibold text-[15px]">Log out</h4>
+                        </div>
+                </div>
+            </div>
         </div>
     );
 };
 
-// Chat Screen (Responsive)
+// Chat Screen
 const ChatScreen = ({ isMobile }: { isMobile: boolean }) => {
     const { id } = useParams();
     const navigate = useNavigate();
@@ -309,7 +335,7 @@ const ChatScreen = ({ isMobile }: { isMobile: boolean }) => {
     useEffect(() => {
         if (!currentUser || !id) return;
 
-        // 1. Subscribe to Messages (Handles offline/online automatically)
+        // 1. Subscribe to Messages
         const unsubMsg = backend.subscribeToMessages(id, (liveMessages) => {
             setMessages(liveMessages);
         });
@@ -320,20 +346,14 @@ const ChatScreen = ({ isMobile }: { isMobile: boolean }) => {
                 setChat(c);
                 if (!c.isGroup) {
                      const otherId = c.participants.find(p => p !== currentUser.id);
-                     // Lightweight fetch/sub for other user. 
-                     // Ideally we would have a users map in context, but individual sub is fine.
-                     // We'll use the generic users list sub for simplicity or just keep it simple.
-                     // Here we'll just set it if we find it in the global list if accessible, 
-                     // or implementing a quick one-off listener could be better but let's stick to the list pattern 
-                     // to avoid too many listeners. 
-                     // Actually, let's just use the backend.findDirectChat equivalent logic or assume global users are cached.
-                     // The cleanest 'Real' way without redux is a dedicated user hook.
-                     // We'll leave the avatar blank until loaded or reuse the users sub.
-                     const unsubU = backend.subscribeToUsers((users) => {
-                         setOtherUser(users.find(u => u.id === otherId));
-                     });
-                     // cleanup user sub
-                     return () => unsubU();
+                     if (otherId) {
+                        // Subscribe to other user status for online indicator
+                         // Note: creating a dedicated sub here is fine for this scale
+                         const unsubU = backend.subscribeToUsers((users) => {
+                             setOtherUser(users.find(u => u.id === otherId));
+                         });
+                         return () => unsubU();
+                     }
                 }
             }
         });
@@ -354,7 +374,6 @@ const ChatScreen = ({ isMobile }: { isMobile: boolean }) => {
         const txt = input;
         setInput('');
         
-        // Fire and forget - Firestore handles offline queuing and syncing
         backend.sendMessage(id, txt, currentUser.id).catch(err => {
             console.error("Send failed", err);
         });
@@ -490,6 +509,17 @@ const AuthScreen = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
+      
+      if (!formData.email || !formData.password) {
+          showToast('Please enter both email and password', 'error');
+          return;
+      }
+      
+      if (!isLogin && !formData.name) {
+          showToast('Please enter your name', 'error');
+          return;
+      }
+
       setLoading(true);
       try {
           if (isLogin) {
@@ -501,9 +531,12 @@ const AuthScreen = () => {
           }
       } catch (err: any) {
           console.error(err);
-          let msg = err.message;
-          if(msg.includes('auth/email-already-in-use')) msg = 'Email already in use';
+          let msg = err.message || 'Authentication failed';
+          // Friendly mapping
+          if(msg.includes('auth/email-already-in-use')) msg = 'Account exists. Please log in.';
           if(msg.includes('auth/invalid-credential')) msg = 'Invalid credentials';
+          if(msg.includes('auth/weak-password')) msg = 'Password should be at least 6 characters';
+          if(msg.includes('not configured')) msg = 'Database missing: Create Firestore in Firebase Console';
           showToast(msg, 'error');
       } finally {
           setLoading(false);
@@ -526,6 +559,12 @@ const AuthScreen = () => {
                 <p className="text-zinc-400 font-medium text-sm leading-relaxed px-4">
                     {isLogin ? 'Log in to continue your conversations.' : 'Join vChat and start messaging.'}
                 </p>
+                {!backend.isConfigured() && (
+                    <div className="mt-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg text-red-200 text-xs text-left">
+                        <strong>Configuration Required:</strong><br/>
+                        Please open <code>services/backend.ts</code> and paste your Firebase configuration keys to make the app functional.
+                    </div>
+                )}
             </div>
 
             <form className="space-y-4 animate-fade-in" onSubmit={handleSubmit}>
@@ -678,7 +717,10 @@ export default function App() {
   const isOnline = useNetworkStatus();
   
   useEffect(() => {
-    const unsub = backend.onAuthChange((u) => setUser(u));
+    // This now sets up the real-time auth listener
+    const unsub = backend.onAuthChange((u) => {
+        setUser(u);
+    });
     return unsub;
   }, []);
 
@@ -690,11 +732,8 @@ export default function App() {
 
   const [loading, setLoading] = useState(true);
   useEffect(() => { 
-      // Allow a brief moment for auth restoration before showing login screen
-      const t = setTimeout(() => {
-          backend.waitForAuth().then(() => setLoading(false));
-      }, 500);
-      return () => clearTimeout(t);
+      // Simplified auth waiting logic, just enough for the splash
+      backend.waitForAuth().then(() => setLoading(false));
   }, []);
 
   if (loading) return (
@@ -705,7 +744,6 @@ export default function App() {
       </HashRouter>
   );
 
-  // Note: pendingQueue and queueMessage removed in favor of Firestore native offline support
   return (
     <AppContext.Provider value={{ showToast, currentUser: user, isOnline }}>
         <HashRouter>
