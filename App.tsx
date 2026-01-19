@@ -347,8 +347,6 @@ const ChatScreen = ({ isMobile }: { isMobile: boolean }) => {
                 if (!c.isGroup) {
                      const otherId = c.participants.find(p => p !== currentUser.id);
                      if (otherId) {
-                        // Subscribe to other user status for online indicator
-                         // Note: creating a dedicated sub here is fine for this scale
                          const unsubU = backend.subscribeToUsers((users) => {
                              setOtherUser(users.find(u => u.id === otherId));
                          });
@@ -411,10 +409,10 @@ const ChatScreen = ({ isMobile }: { isMobile: boolean }) => {
                     </div>
                 </div>
                 <div className="flex gap-2">
-                    <button className="size-10 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-white transition-colors">
+                    <button onClick={() => navigate(`/call/${id}?type=video`)} className="size-10 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-white transition-colors">
                         <span className="material-symbols-rounded">videocam</span>
                     </button>
-                    <button className="size-10 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-white transition-colors">
+                    <button onClick={() => navigate(`/call/${id}?type=audio`)} className="size-10 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-white transition-colors">
                         <span className="material-symbols-rounded">call</span>
                     </button>
                 </div>
@@ -536,7 +534,10 @@ const AuthScreen = () => {
           if(msg.includes('auth/email-already-in-use')) msg = 'Account exists. Please log in.';
           if(msg.includes('auth/invalid-credential')) msg = 'Invalid credentials';
           if(msg.includes('auth/weak-password')) msg = 'Password should be at least 6 characters';
-          if(msg.includes('not configured')) msg = 'Database missing: Create Firestore in Firebase Console';
+          if(msg.includes('not-found') || msg.includes('does not exist')) msg = 'Database Missing: Create Firestore in Firebase Console';
+          if(msg.includes('permission-denied') || msg.includes('Permission Denied')) msg = 'Rules Error: Configure Firestore Rules in Console';
+          if(msg.includes('auth/operation-not-allowed')) msg = 'Login Disabled: Enable Email/Password in Console';
+          
           showToast(msg, 'error');
       } finally {
           setLoading(false);
@@ -637,6 +638,96 @@ const CreateChatScreen = () => {
     );
 };
 
+const CallScreen = () => {
+    const { id } = useParams();
+    const navigate = useNavigate();
+    const location = useLocation();
+    const { currentUser } = useContext(AppContext);
+    
+    // Parse query params
+    const query = new URLSearchParams(location.search);
+    const type = query.get('type') || 'audio';
+    
+    const [chat, setChat] = useState<Chat | null>(null);
+    const [otherUser, setOtherUser] = useState<User | undefined>(undefined);
+    const [status, setStatus] = useState('Connecting...');
+    const [isMuted, setIsMuted] = useState(false);
+    const [cameraOn, setCameraOn] = useState(type === 'video');
+
+    useEffect(() => {
+        if (!id) return;
+        const unsub = backend.subscribeToChat(id, (c) => {
+            setChat(c);
+            if (c && !c.isGroup && currentUser) {
+                const otherId = c.participants.find(p => p !== currentUser.id);
+                if (otherId) {
+                    const subUser = backend.subscribeToUsers((users) => {
+                        const u = users.find(u => u.id === otherId);
+                        if (u) setOtherUser(u);
+                    });
+                }
+            }
+        });
+        
+        // Mock connection states
+        const t1 = setTimeout(() => setStatus('Ringing...'), 1000);
+        const t2 = setTimeout(() => setStatus('00:01'), 3000);
+
+        return () => {
+            unsub();
+            clearTimeout(t1);
+            clearTimeout(t2);
+        };
+    }, [id, currentUser]);
+
+    const title = chat?.isGroup ? chat.name : (otherUser?.name || 'Unknown User');
+    const avatar = chat?.isGroup ? chat.avatar : (otherUser?.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=call');
+
+    return (
+        <div className="h-[100dvh] w-full bg-[#111] flex flex-col items-center justify-between py-12 px-6 relative overflow-hidden">
+            {/* Ambient Background */}
+            <div className="absolute inset-0 opacity-40 pointer-events-none">
+                <img src={avatar} className="w-full h-full object-cover blur-3xl scale-110" alt="bg" />
+                <div className="absolute inset-0 bg-black/60"></div>
+            </div>
+
+            <div className="z-10 flex flex-col items-center gap-6 mt-10">
+                <div className="relative">
+                    <img src={avatar} className="w-32 h-32 rounded-full object-cover border-4 border-white/10 shadow-2xl" alt="avatar" />
+                    {status === 'Ringing...' && (
+                        <div className="absolute inset-0 rounded-full border-2 border-primary animate-ping"></div>
+                    )}
+                </div>
+                <div className="text-center">
+                    <h2 className="text-2xl font-bold text-white mb-2">{title}</h2>
+                    <p className="text-zinc-300 font-medium">{status}</p>
+                </div>
+            </div>
+
+            <div className="z-10 w-full max-w-sm grid grid-cols-3 gap-6 mb-8">
+                 <button 
+                    onClick={() => setCameraOn(!cameraOn)} 
+                    className={`h-16 rounded-full flex items-center justify-center transition-all ${cameraOn ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
+                >
+                    <span className="material-symbols-rounded text-2xl">{cameraOn ? 'videocam' : 'videocam_off'}</span>
+                 </button>
+                 <button 
+                    onClick={() => setIsMuted(!isMuted)} 
+                    className={`h-16 rounded-full flex items-center justify-center transition-all ${isMuted ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
+                >
+                    <span className="material-symbols-rounded text-2xl">{isMuted ? 'mic_off' : 'mic'}</span>
+                 </button>
+                 <button 
+                    onClick={() => navigate(-1)} 
+                    className="h-16 rounded-full bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-500/30 hover:bg-red-600 transition-all active:scale-95"
+                >
+                    <span className="material-symbols-rounded text-3xl">call_end</span>
+                </button>
+            </div>
+        </div>
+    );
+};
+
 const MobileLayout = () => {
     const [activeTab, setActiveTab] = useState<TabName>('CHATS');
     const navigate = useNavigate();
@@ -660,7 +751,7 @@ const MobileLayout = () => {
                 } />
                 <Route path="/chat/:id" element={<ChatScreen isMobile={true} />} />
                 <Route path="/create-chat" element={<CreateChatScreen />} />
-                <Route path="/call/*" element={<div className="text-white p-10 text-center">Call Interface (Demo)</div>} />
+                <Route path="/call/:id" element={<CallScreen />} />
             </Routes>
         </div>
     );
@@ -704,6 +795,7 @@ const WebLayout = () => {
                     } />
                     <Route path="/chat/:id" element={<ChatScreen isMobile={false} />} />
                     <Route path="/create-chat" element={<CreateChatScreen />} />
+                    <Route path="/call/:id" element={<CallScreen />} />
                 </Routes>
             </div>
         </div>
