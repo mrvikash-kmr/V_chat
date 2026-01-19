@@ -644,85 +644,248 @@ const CallScreen = () => {
     const location = useLocation();
     const { currentUser } = useContext(AppContext);
     
-    // Parse query params
     const query = new URLSearchParams(location.search);
     const type = query.get('type') || 'audio';
+    const isVideo = type === 'video';
     
     const [chat, setChat] = useState<Chat | null>(null);
     const [otherUser, setOtherUser] = useState<User | undefined>(undefined);
-    const [status, setStatus] = useState('Connecting...');
+    const [status, setStatus] = useState('Initializing...');
     const [isMuted, setIsMuted] = useState(false);
-    const [cameraOn, setCameraOn] = useState(type === 'video');
+    const [cameraOn, setCameraOn] = useState(isVideo);
+    const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+    
+    const localVideoRef = useRef<HTMLVideoElement>(null);
+    const remoteVideoRef = useRef<HTMLVideoElement>(null);
+    const pc = useRef<RTCPeerConnection | null>(null);
+    const chatId = id!;
 
     useEffect(() => {
-        if (!id) return;
-        const unsub = backend.subscribeToChat(id, (c) => {
-            setChat(c);
-            if (c && !c.isGroup && currentUser) {
-                const otherId = c.participants.find(p => p !== currentUser.id);
-                if (otherId) {
-                    const subUser = backend.subscribeToUsers((users) => {
-                        const u = users.find(u => u.id === otherId);
-                        if (u) setOtherUser(u);
-                    });
+        const fetchMeta = async () => {
+             const c = await new Promise<Chat | null>(resolve => {
+                 const unsub = backend.subscribeToChat(chatId, (c) => {
+                     unsub();
+                     resolve(c);
+                 });
+             });
+             setChat(c);
+             if(c && !c.isGroup && currentUser) {
+                 const otherId = c.participants.find(p => p !== currentUser.id);
+                 if(otherId) {
+                     const unsubU = backend.subscribeToUsers((users) => {
+                        setOtherUser(users.find(u => u.id === otherId));
+                        unsubU();
+                     });
+                 }
+             }
+        };
+        fetchMeta();
+    }, [chatId, currentUser]);
+
+    useEffect(() => {
+        const servers = {
+            iceServers: [
+                {
+                    urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'],
+                },
+            ],
+            iceCandidatePoolSize: 10,
+        };
+        pc.current = new RTCPeerConnection(servers);
+
+        const initWebRTC = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: isVideo, 
+                    audio: true 
+                });
+                setLocalStream(stream);
+                
+                // Add tracks to PC
+                stream.getTracks().forEach(track => {
+                    pc.current?.addTrack(track, stream);
+                });
+
+                if (localVideoRef.current) {
+                    localVideoRef.current.srcObject = stream;
                 }
+
+                pc.current.ontrack = (event) => {
+                    event.streams[0].getTracks().forEach(track => {
+                        track.onunmute = () => {
+                             if (remoteVideoRef.current) {
+                                remoteVideoRef.current.srcObject = event.streams[0];
+                            }
+                        };
+                    });
+                };
+
+                // Signaling Logic
+                const callExists = await backend.checkCallExists(chatId);
+                
+                if (callExists) {
+                    // We are Callee
+                    setStatus("Joining Call...");
+                    
+                    const unsubCall = backend.subscribeToCall(chatId, async (data) => {
+                        if (!pc.current?.remoteDescription && data?.offer) {
+                            const offerDescription = new RTCSessionDescription(data.offer);
+                            await pc.current?.setRemoteDescription(offerDescription);
+                            
+                            const answerDescription = await pc.current?.createAnswer();
+                            await pc.current?.setLocalDescription(answerDescription!);
+                            
+                            const answer = {
+                                type: answerDescription?.type,
+                                sdp: answerDescription?.sdp,
+                            };
+                            
+                            await backend.answerCall(chatId, answer);
+                            setStatus("Connected");
+                        }
+                    });
+
+                    // Handle Candidates
+                    const unsubCandidates = backend.subscribeToCandidates(chatId, 'caller', (candidate) => {
+                        const candidateObj = new RTCIceCandidate(candidate);
+                        pc.current?.addIceCandidate(candidateObj);
+                    });
+
+                    pc.current.onicecandidate = (event) => {
+                        if (event.candidate) {
+                            backend.saveCandidate(chatId, event.candidate.toJSON(), 'callee');
+                        }
+                    };
+                    
+                    return () => { unsubCall(); unsubCandidates(); };
+
+                } else {
+                    // We are Caller
+                    setStatus("Calling...");
+                    
+                    pc.current.onicecandidate = (event) => {
+                        if (event.candidate) {
+                            backend.saveCandidate(chatId, event.candidate.toJSON(), 'caller');
+                        }
+                    };
+
+                    const offerDescription = await pc.current.createOffer();
+                    await pc.current.setLocalDescription(offerDescription);
+                    
+                    const offer = {
+                        sdp: offerDescription.sdp,
+                        type: offerDescription.type,
+                    };
+                    
+                    await backend.createCall(chatId, offer);
+
+                    const unsubCall = backend.subscribeToCall(chatId, (data) => {
+                        if (!pc.current?.currentRemoteDescription && data?.answer) {
+                            const answerDescription = new RTCSessionDescription(data.answer);
+                            pc.current?.setRemoteDescription(answerDescription);
+                            setStatus("Connected");
+                        }
+                    });
+
+                    const unsubCandidates = backend.subscribeToCandidates(chatId, 'callee', (candidate) => {
+                        const candidateObj = new RTCIceCandidate(candidate);
+                        pc.current?.addIceCandidate(candidateObj);
+                    });
+                    
+                    return () => { unsubCall(); unsubCandidates(); };
+                }
+            } catch (err) {
+                console.error("WebRTC Init Error", err);
+                setStatus("Connection Failed");
             }
-        });
-        
-        // Mock connection states
-        const t1 = setTimeout(() => setStatus('Ringing...'), 1000);
-        const t2 = setTimeout(() => setStatus('00:01'), 3000);
+        };
+
+        const cleanupPromise = initWebRTC();
 
         return () => {
-            unsub();
-            clearTimeout(t1);
-            clearTimeout(t2);
+            // Cleanup function for useEffect
+            backend.endCall(chatId); // End call in DB
+            localStream?.getTracks().forEach(t => t.stop());
+            pc.current?.close();
+            // Await promise if possible or just let it go
         };
-    }, [id, currentUser]);
+    }, []); // Run once on mount
+
+    // Toggle Camera/Mic
+    useEffect(() => {
+        if(localStream) {
+            localStream.getVideoTracks().forEach(track => track.enabled = cameraOn);
+            localStream.getAudioTracks().forEach(track => track.enabled = !isMuted);
+        }
+    }, [cameraOn, isMuted, localStream]);
 
     const title = chat?.isGroup ? chat.name : (otherUser?.name || 'Unknown User');
     const avatar = chat?.isGroup ? chat.avatar : (otherUser?.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=call');
 
     return (
-        <div className="h-[100dvh] w-full bg-[#111] flex flex-col items-center justify-between py-12 px-6 relative overflow-hidden">
-            {/* Ambient Background */}
-            <div className="absolute inset-0 opacity-40 pointer-events-none">
-                <img src={avatar} className="w-full h-full object-cover blur-3xl scale-110" alt="bg" />
-                <div className="absolute inset-0 bg-black/60"></div>
+        <div className="h-[100dvh] w-full bg-[#111] flex flex-col items-center justify-between relative overflow-hidden">
+            {/* Remote Video (Background) */}
+            <div className="absolute inset-0 bg-zinc-900">
+                <video 
+                    ref={remoteVideoRef} 
+                    autoPlay 
+                    playsInline 
+                    className="w-full h-full object-cover"
+                />
+                {/* Fallback overlay if no video yet or just audio */}
+                {status !== 'Connected' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-10">
+                         <div className="flex flex-col items-center gap-6">
+                            <div className="relative">
+                                <img src={avatar} className="w-24 h-24 rounded-full object-cover border-4 border-white/10 shadow-2xl" alt="avatar" />
+                                {status === 'Calling...' && (
+                                    <div className="absolute inset-0 rounded-full border-2 border-primary animate-ping"></div>
+                                )}
+                            </div>
+                            <div className="text-center">
+                                <h2 className="text-2xl font-bold text-white mb-2">{title}</h2>
+                                <p className="text-zinc-300 font-medium">{status}</p>
+                            </div>
+                         </div>
+                    </div>
+                )}
             </div>
 
-            <div className="z-10 flex flex-col items-center gap-6 mt-10">
-                <div className="relative">
-                    <img src={avatar} className="w-32 h-32 rounded-full object-cover border-4 border-white/10 shadow-2xl" alt="avatar" />
-                    {status === 'Ringing...' && (
-                        <div className="absolute inset-0 rounded-full border-2 border-primary animate-ping"></div>
-                    )}
+            {/* Local Video (PiP) */}
+            {cameraOn && (
+                <div className="absolute top-6 right-6 w-32 h-48 bg-black/50 rounded-2xl overflow-hidden border border-white/20 shadow-2xl z-20">
+                     <video 
+                        ref={localVideoRef} 
+                        autoPlay 
+                        playsInline 
+                        muted
+                        className="w-full h-full object-cover transform -scale-x-100" // Mirror local
+                     />
                 </div>
-                <div className="text-center">
-                    <h2 className="text-2xl font-bold text-white mb-2">{title}</h2>
-                    <p className="text-zinc-300 font-medium">{status}</p>
-                </div>
-            </div>
+            )}
 
-            <div className="z-10 w-full max-w-sm grid grid-cols-3 gap-6 mb-8">
-                 <button 
-                    onClick={() => setCameraOn(!cameraOn)} 
-                    className={`h-16 rounded-full flex items-center justify-center transition-all ${cameraOn ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
-                >
-                    <span className="material-symbols-rounded text-2xl">{cameraOn ? 'videocam' : 'videocam_off'}</span>
-                 </button>
-                 <button 
-                    onClick={() => setIsMuted(!isMuted)} 
-                    className={`h-16 rounded-full flex items-center justify-center transition-all ${isMuted ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
-                >
-                    <span className="material-symbols-rounded text-2xl">{isMuted ? 'mic_off' : 'mic'}</span>
-                 </button>
-                 <button 
-                    onClick={() => navigate(-1)} 
-                    className="h-16 rounded-full bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-500/30 hover:bg-red-600 transition-all active:scale-95"
-                >
-                    <span className="material-symbols-rounded text-3xl">call_end</span>
-                </button>
+            {/* Controls */}
+            <div className="z-30 w-full pb-10 pt-20 bg-gradient-to-t from-black/90 to-transparent flex justify-center mt-auto">
+                <div className="grid grid-cols-3 gap-8">
+                     <button 
+                        onClick={() => setCameraOn(!cameraOn)} 
+                        className={`size-16 rounded-full flex items-center justify-center transition-all ${cameraOn ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
+                    >
+                        <span className="material-symbols-rounded text-2xl">{cameraOn ? 'videocam' : 'videocam_off'}</span>
+                     </button>
+                     <button 
+                        onClick={() => setIsMuted(!isMuted)} 
+                        className={`size-16 rounded-full flex items-center justify-center transition-all ${isMuted ? 'bg-white text-black' : 'bg-white/10 text-white hover:bg-white/20'}`}
+                    >
+                        <span className="material-symbols-rounded text-2xl">{isMuted ? 'mic_off' : 'mic'}</span>
+                     </button>
+                     <button 
+                        onClick={() => navigate(-1)} 
+                        className="size-16 rounded-full bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-500/30 hover:bg-red-600 transition-all active:scale-95"
+                    >
+                        <span className="material-symbols-rounded text-3xl">call_end</span>
+                    </button>
+                </div>
             </div>
         </div>
     );
